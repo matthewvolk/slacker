@@ -47,7 +47,11 @@ func loadOrFetchUsers(ctx context.Context, sess *slackdump.Session) (map[string]
 		if name == "" {
 			name = u.Name
 		}
-		userMap[u.ID] = &userInfo{Name: name, Username: u.Name}
+		username := u.Profile.DisplayName
+		if username == "" {
+			username = u.Name
+		}
+		userMap[u.ID] = &userInfo{Name: name, Username: username}
 	}
 
 	// Save to cache (best-effort, ignore errors)
