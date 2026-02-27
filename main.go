@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,11 +16,85 @@ import (
 	"github.com/rusq/slackdump/v4/types"
 )
 
+var version = "dev"
+
+// Exit codes
+const (
+	exitOK    = 0
+	exitError = 1
+	exitUsage = 2
+	exitAuth  = 3
+	exitAPI   = 4
+)
+
+// exitError is a sentinel error that carries a specific exit code.
+type codeError struct {
+	code int
+	err  error
+}
+
+func (e *codeError) Error() string { return e.err.Error() }
+func (e *codeError) Unwrap() error { return e.err }
+
+func usageErr(err error) error { return &codeError{code: exitUsage, err: err} }
+func authErr(err error) error  { return &codeError{code: exitAuth, err: err} }
+func apiErr(err error) error   { return &codeError{code: exitAPI, err: err} }
+
+type flags struct {
+	help          bool
+	version       bool
+	json          bool
+	noInteractive bool
+}
+
+func parseFlags(args []string) ([]string, flags) {
+	var f flags
+	var positional []string
+	for _, arg := range args {
+		switch arg {
+		case "--help", "-h", "help":
+			f.help = true
+		case "--version":
+			f.version = true
+		case "--json":
+			f.json = true
+		case "--no-interactive":
+			f.noInteractive = true
+		default:
+			positional = append(positional, arg)
+		}
+	}
+	return positional, f
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		code := exitError
+		var ce *codeError
+		if errors.As(err, &ce) {
+			code = ce.code
+		}
+		os.Exit(code)
 	}
+}
+
+func printUsage() {
+	fmt.Println(`Usage: slacker [flags] <thread-url> [end-url]
+       slacker tz [timezone]
+       slacker purge
+
+Dump Slack conversations as readable text.
+
+Commands:
+  tz [timezone]   Show or set the display timezone (IANA name)
+  purge           Clear cached user data
+
+Flags:
+  --help, -h        Show this help message
+  --version         Show version
+  --json            Output as JSON instead of plain text
+  --no-interactive  Fail instead of opening browser for auth`)
 }
 
 // credentialsFilePath returns the path to the global credentials file.
@@ -41,7 +116,16 @@ func run() error {
 		_ = godotenv.Load(credPath)
 	}
 
-	args := os.Args[1:]
+	args, fl := parseFlags(os.Args[1:])
+
+	if fl.help {
+		printUsage()
+		return nil
+	}
+	if fl.version {
+		fmt.Println("slacker " + version)
+		return nil
+	}
 
 	// Handle subcommands before URL-based logic
 	if len(args) >= 1 && args[0] == "tz" {
@@ -52,25 +136,25 @@ func run() error {
 	}
 
 	if len(args) < 1 || len(args) > 2 {
-		return fmt.Errorf("usage: slacker <thread-url> [end-url]\n       slacker tz [timezone]\n       slacker purge")
+		return usageErr(fmt.Errorf("usage: slacker <thread-url> [end-url]\n       slacker tz [timezone]\n       slacker purge\n\nRun 'slacker --help' for more information."))
 	}
 
 	ctx := context.Background()
 
-	prov, err := authenticate(ctx, args[0])
+	prov, err := authenticate(ctx, args[0], fl.noInteractive)
 	if err != nil {
-		return fmt.Errorf("authentication: %w", err)
+		return authErr(fmt.Errorf("authentication: %w", err))
 	}
 
 	nopLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sess, err := slackdump.New(ctx, prov, slackdump.WithLogger(nopLogger))
 	if err != nil {
-		return fmt.Errorf("creating session: %w", err)
+		return apiErr(fmt.Errorf("creating session: %w", err))
 	}
 
 	userMap, err := loadOrFetchUsers(ctx, sess)
 	if err != nil {
-		return fmt.Errorf("loading users: %w", err)
+		return apiErr(fmt.Errorf("loading users: %w", err))
 	}
 
 	var conv *types.Conversation
@@ -81,25 +165,29 @@ func run() error {
 	case 2:
 		_, oldest, parseErr := parseSlackURL(args[0])
 		if parseErr != nil {
-			return fmt.Errorf("parsing start URL: %w", parseErr)
+			return usageErr(fmt.Errorf("parsing start URL: %w", parseErr))
 		}
 		if oldest.IsZero() {
-			return fmt.Errorf("start URL must include a message timestamp")
+			return usageErr(fmt.Errorf("start URL must include a message timestamp"))
 		}
 		_, latest, parseErr := parseSlackURL(args[1])
 		if parseErr != nil {
-			return fmt.Errorf("parsing end URL: %w", parseErr)
+			return usageErr(fmt.Errorf("parsing end URL: %w", parseErr))
 		}
 		if latest.IsZero() {
-			return fmt.Errorf("end URL must include a message timestamp")
+			return usageErr(fmt.Errorf("end URL must include a message timestamp"))
 		}
 		conv, err = sess.Dump(ctx, args[0], oldest, latest)
 	}
 	if err != nil {
-		return fmt.Errorf("dumping messages: %w", err)
+		return apiErr(fmt.Errorf("dumping messages: %w", err))
 	}
 
-	formatConversation(os.Stdout, conv, userMap)
+	if fl.json {
+		formatConversationJSON(os.Stdout, conv, userMap)
+	} else {
+		formatConversation(os.Stdout, conv, userMap)
+	}
 	return nil
 }
 
@@ -160,7 +248,7 @@ func handlePurge() error {
 	return nil
 }
 
-func authenticate(ctx context.Context, slackURL string) (auth.Provider, error) {
+func authenticate(ctx context.Context, slackURL string, noInteractive bool) (auth.Provider, error) {
 	token := os.Getenv("SLACK_TOKEN")
 	if token != "" {
 		cookie := os.Getenv("SLACK_COOKIE")
@@ -169,6 +257,10 @@ func authenticate(ctx context.Context, slackURL string) (auth.Provider, error) {
 			return nil, err
 		}
 		return prov, nil
+	}
+
+	if noInteractive {
+		return nil, fmt.Errorf("no credentials found (set SLACK_TOKEN or run without --no-interactive to log in via browser)")
 	}
 
 	workspace, err := extractWorkspace(slackURL)

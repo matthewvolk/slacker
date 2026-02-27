@@ -54,11 +54,13 @@ func loadOrFetchUsers(ctx context.Context, sess *slackdump.Session) (map[string]
 		userMap[u.ID] = &userInfo{Name: name, Username: username}
 	}
 
-	// Save to cache (best-effort, ignore errors)
-	_ = saveCache(cachePath, &userCache{
+	// Save to cache (best-effort, warn on failure)
+	if err := saveCache(cachePath, &userCache{
 		FetchedAt: time.Now(),
 		Users:     userMap,
-	})
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not save user cache: %v\n", err)
+	}
 
 	return userMap, nil
 }

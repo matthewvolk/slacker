@@ -32,21 +32,42 @@ slacker "https://workspace.slack.com/archives/C123ABC456/p1577694990000400"
 # Range mode: dump messages between two message links (same channel)
 slacker "https://workspace.slack.com/archives/C123ABC456/p1577694990000400" \
         "https://workspace.slack.com/archives/C123ABC456/p1577700000000000"
+
+# JSON output for programmatic use
+slacker --json "https://workspace.slack.com/archives/C123ABC456/p1577694990000400"
 ```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--help`, `-h` | Show help message |
+| `--version` | Show version |
+| `--json` | Output as JSON instead of plain text |
+| `--no-interactive` | Fail instead of opening browser for auth |
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `tz [timezone]` | Show or set the display timezone (IANA name) |
+| `purge` | Clear cached user data |
 
 ### Output format
 
+#### Plain text (default)
+
 ```
-> Alice Smith (@asmith) @ 26/02/2026 11:53:32 PM CST:
+> Alice Smith (@asmith) @ 2026-02-26 23:53:32 CST:
 Hey @bjones, check out this thread
 
-|   > Bob Jones (@bjones) @ 26/02/2026 11:54:10 PM CST:
+|   > Bob Jones (@bjones) @ 2026-02-26 23:54:10 CST:
 |   Thanks @asmith!
 ```
 
 - Thread replies are indented with `|   ` prefix
 - `<@U123ABC>` mentions are resolved to `@username`
-- Message headers show full name, `@username`, and timestamp
+- Message headers show full name, `@username`, and timestamp (ISO 8601)
 - Output goes to stdout, so you can pipe it anywhere:
 
 ```bash
@@ -57,6 +78,43 @@ slacker "https://..." | pbcopy
 slacker "https://..." > thread.txt
 ```
 
+#### JSON (`--json`)
+
+```bash
+slacker --json "https://..." | jq .
+```
+
+```json
+{
+  "messages": [
+    {
+      "user": "Alice Smith",
+      "username": "asmith",
+      "timestamp": "2026-02-26T23:53:32-06:00",
+      "text": "Hey @bjones, check out this thread",
+      "replies": [
+        {
+          "user": "Bob Jones",
+          "username": "bjones",
+          "timestamp": "2026-02-26T23:54:10-06:00",
+          "text": "Thanks @asmith!"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error |
+| 2 | Usage error (bad arguments, invalid URL) |
+| 3 | Authentication error |
+| 4 | Network/API error |
+
 ## Authentication
 
 Slacker checks for credentials in this order:
@@ -64,13 +122,15 @@ Slacker checks for credentials in this order:
 1. **Environment variables** — `SLACK_TOKEN` and `SLACK_COOKIE` set in your shell
 2. **`.env` file** in the current working directory (project-specific override)
 3. **Global credentials file** — stored in the OS config directory (see below)
-4. **Browser login** — interactive prompt as a last resort
+4. **Browser login** — interactive prompt as a last resort (disabled by `--no-interactive`)
 
 ### Browser login (SSO, Google, email/password, etc.)
 
 On first run (or when credentials expire), slacker opens an interactive browser prompt via slackdump's ROD auth, supporting Okta SSO, Google SSO, email/password, and more.
 
 After a successful browser login, credentials are **automatically saved** to the global credentials file so subsequent runs from any directory work without re-authenticating.
+
+Use `--no-interactive` to disable this fallback (e.g., in scripts or CI). Slacker will fail with exit code 3 if no credentials are available.
 
 ### Credentials storage
 
@@ -110,14 +170,14 @@ Slacker caches workspace user data (display names and usernames) to avoid hittin
 - **macOS:** `~/Library/Caches/slacker/users.json`
 - **Linux:** `~/.cache/slacker/users.json`
 
-The cache expires after **24 hours** and is automatically refreshed on the next run. To force a refresh, delete the cache file.
+The cache expires after **24 hours** and is automatically refreshed on the next run. To force a refresh, delete the cache file or run `slacker purge`.
 
 ## Project structure
 
 ```
 slacker/
   main.go      — entry point, auth, CLI orchestration
-  format.go    — text formatting, @mention replacement, timezone handling
+  format.go    — text formatting, JSON output, @mention replacement, timezone handling
   parse.go     — Slack URL parsing, timestamp extraction
   cache.go     — user cache (JSON file with 24h TTL)
 ```
@@ -128,6 +188,7 @@ slacker/
 - **Reimplemented internals:** slackdump's URL parser and text formatter live under `internal/`, which Go prevents external modules from importing. Slacker reimplements two small pieces: URL-to-timestamp parsing (~15 lines) and text formatting (~60 lines).
 - **Silent by default:** slackdump's internal logging is suppressed via a discard logger to keep output clean and minimize token usage when used by AI agents.
 - **Thread-aware formatting:** When dumping a thread URL, slackdump returns all messages flat (parent first, then replies). Slacker detects this via `conv.IsThread()` and applies reply indentation. For channel dumps, replies come nested in `ThreadReplies` and are handled recursively.
+- **Semantic exit codes:** Different failure modes produce distinct exit codes (2=usage, 3=auth, 4=API) so calling scripts can handle errors appropriately.
 
 ## Dependencies
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"html"
 	"io"
@@ -12,7 +13,7 @@ import (
 	"github.com/rusq/slackdump/v4/types"
 )
 
-const timeFormat = "02/01/2006 3:04:05 PM MST"
+const timeFormat = "2006-01-02 15:04:05 MST"
 
 // loadTimezone returns the location from the TZ env var, or UTC if unset/invalid.
 func loadTimezone() *time.Location {
@@ -57,6 +58,63 @@ func formatMessages(w io.Writer, messages []types.Message, userMap map[string]*u
 			formatMessages(w, msg.ThreadReplies, userMap, prefix+"|   ", loc)
 		}
 	}
+}
+
+// jsonMessage represents a single message in JSON output.
+type jsonMessage struct {
+	User      string        `json:"user"`
+	Username  string        `json:"username"`
+	Timestamp string        `json:"timestamp"`
+	Text      string        `json:"text"`
+	Replies   []jsonMessage `json:"replies,omitempty"`
+}
+
+// formatConversationJSON writes a conversation to w as JSON.
+func formatConversationJSON(w io.Writer, conv *types.Conversation, userMap map[string]*userInfo) {
+	loc := loadTimezone()
+
+	var messages []jsonMessage
+	if conv.IsThread() && len(conv.Messages) > 0 {
+		parent := toJSONMessage(conv.Messages[0], userMap, loc)
+		parent.Replies = toJSONMessages(conv.Messages[1:], userMap, loc)
+		messages = append(messages, parent)
+	} else {
+		messages = toJSONMessages(conv.Messages, userMap, loc)
+	}
+
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(struct {
+		Messages []jsonMessage `json:"messages"`
+	}{Messages: messages})
+}
+
+func toJSONMessages(messages []types.Message, userMap map[string]*userInfo, loc *time.Location) []jsonMessage {
+	out := make([]jsonMessage, 0, len(messages))
+	for _, msg := range messages {
+		out = append(out, toJSONMessage(msg, userMap, loc))
+	}
+	return out
+}
+
+func toJSONMessage(msg types.Message, userMap map[string]*userInfo, loc *time.Location) jsonMessage {
+	t, _ := msg.Datetime()
+	t = t.In(loc)
+	name, username := displayName(msg.User, userMap)
+	text := replaceMentions(html.UnescapeString(msg.Text), userMap)
+
+	jm := jsonMessage{
+		User:      name,
+		Username:  username,
+		Timestamp: t.Format(time.RFC3339),
+		Text:      text,
+	}
+
+	if len(msg.ThreadReplies) > 0 {
+		jm.Replies = toJSONMessages(msg.ThreadReplies, userMap, loc)
+	}
+
+	return jm
 }
 
 // displayName returns the display name and username for a user ID.
