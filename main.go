@@ -163,21 +163,41 @@ func run() error {
 	case 1:
 		conv, err = sess.DumpAll(ctx, args[0])
 	case 2:
-		_, oldest, parseErr := parseSlackURL(args[0])
+		chanID, oldest, parseErr := parseSlackURL(args[0])
 		if parseErr != nil {
 			return usageErr(fmt.Errorf("parsing start URL: %w", parseErr))
 		}
 		if oldest.IsZero() {
 			return usageErr(fmt.Errorf("start URL must include a message timestamp"))
 		}
-		_, latest, parseErr := parseSlackURL(args[1])
+		chanID2, latest, parseErr := parseSlackURL(args[1])
 		if parseErr != nil {
 			return usageErr(fmt.Errorf("parsing end URL: %w", parseErr))
 		}
 		if latest.IsZero() {
 			return usageErr(fmt.Errorf("end URL must include a message timestamp"))
 		}
-		conv, err = sess.Dump(ctx, args[0], oldest, latest)
+		if chanID != chanID2 {
+			return usageErr(fmt.Errorf("both URLs must reference the same channel"))
+		}
+		conv, err = sess.Dump(ctx, chanID, oldest, latest)
+		if err == nil {
+			// The oldest/latest bounds are applied to thread reply fetching too,
+			// which can truncate replies on threads near the range boundaries.
+			// Re-fetch any threads that are missing replies.
+			for i, msg := range conv.Messages {
+				if msg.ReplyCount > 0 && len(msg.ThreadReplies) < msg.ReplyCount {
+					tc, e := sess.DumpAll(ctx, chanID+":"+msg.ThreadTimestamp)
+					if e != nil {
+						err = e
+						break
+					}
+					if len(tc.Messages) > 1 {
+						conv.Messages[i].ThreadReplies = tc.Messages[1:]
+					}
+				}
+			}
+		}
 	}
 	if err != nil {
 		return apiErr(fmt.Errorf("dumping messages: %w", err))
