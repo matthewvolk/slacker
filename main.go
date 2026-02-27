@@ -47,9 +47,12 @@ func run() error {
 	if len(args) >= 1 && args[0] == "tz" {
 		return handleTZ(args[1:])
 	}
+	if len(args) >= 1 && args[0] == "purge" {
+		return handlePurge()
+	}
 
 	if len(args) < 1 || len(args) > 2 {
-		return fmt.Errorf("usage: slacker <thread-url> [end-url]\n       slacker tz [timezone]")
+		return fmt.Errorf("usage: slacker <thread-url> [end-url]\n       slacker tz [timezone]\n       slacker purge")
 	}
 
 	ctx := context.Background()
@@ -139,6 +142,21 @@ func handleTZ(args []string) error {
 	_ = os.Chmod(credPath, 0o600)
 
 	fmt.Fprintf(os.Stderr, "Timezone set to %s\n", tz)
+	return nil
+}
+
+func handlePurge() error {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("cache directory: %w", err)
+	}
+	cacheDir := filepath.Join(dir, "slacker")
+
+	if err := os.RemoveAll(cacheDir); err != nil {
+		return fmt.Errorf("removing cache: %w", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "Cache purged.")
 	return nil
 }
 
